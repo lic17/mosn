@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mosn.io/api"
 	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
 
 	"github.com/valyala/fasthttp"
+	"mosn.io/api"
 	"mosn.io/mosn/pkg/network"
 	"mosn.io/mosn/pkg/protocol"
 	mosnhttp "mosn.io/mosn/pkg/protocol/http"
@@ -78,7 +80,7 @@ func NewConnClient(addr string, f MakeRequestFunc) (*ConnClient, error) {
 	return c, nil
 }
 
-func (c *ConnClient) OnEvent(event types.ConnectionEvent) {
+func (c *ConnClient) OnEvent(event api.ConnectionEvent) {
 	if event.IsClose() {
 		c.isClosed = true
 		close(c.close)
@@ -86,7 +88,7 @@ func (c *ConnClient) OnEvent(event types.ConnectionEvent) {
 }
 
 func (c *ConnClient) Close() {
-	c.conn.Close(types.NoFlush, types.LocalClose)
+	c.conn.Close(api.NoFlush, api.LocalClose)
 }
 
 func (c *ConnClient) IsClosed() bool {

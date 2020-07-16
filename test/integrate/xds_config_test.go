@@ -20,27 +20,25 @@ package integrate
 import (
 	"errors"
 	"fmt"
+	auth "github.com/envoyproxy/go-control-plane/envoy/api/v2/auth"
+	core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
+	route "github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
+        _struct "github.com/golang/protobuf/ptypes/struct"
+	"github.com/golang/protobuf/ptypes/wrappers"
 	"io/ioutil"
 	"path/filepath"
 	"testing"
 
-	"github.com/envoyproxy/go-control-plane/pkg/util"
-
-	"github.com/envoyproxy/go-control-plane/envoy/api/v2/auth"
-	"github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
-	"github.com/gogo/protobuf/types"
-
+        xdsutil "github.com/envoyproxy/go-control-plane/pkg/conversion"
 	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	xdslistener "github.com/envoyproxy/go-control-plane/envoy/api/v2/listener"
-	"github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
 	http_conn "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
-	"github.com/gogo/protobuf/proto"
+        "github.com/golang/protobuf/proto"
 	jsoniter "github.com/json-iterator/go"
 	admin "mosn.io/mosn/pkg/admin/store"
 	v2 "mosn.io/mosn/pkg/config/v2"
 	"mosn.io/mosn/pkg/configmanager"
 	_ "mosn.io/mosn/pkg/filter/stream/faultinject"
-	_ "mosn.io/mosn/pkg/filter/stream/healthcheck/sofarpc"
 	_ "mosn.io/mosn/pkg/filter/stream/mixer"
 	"mosn.io/mosn/pkg/mosn"
 	"mosn.io/mosn/pkg/xds/conv"
@@ -52,13 +50,14 @@ type effectiveConfig struct {
 	MOSNConfig interface{}            `json:"mosn_config,omitempty"`
 	Listener   map[string]v2.Listener `json:"listener,omitempty"`
 	Cluster    map[string]v2.Cluster  `json:"cluster,omitempty"`
+	Routers    map[string]v2.RouterConfiguration `josn:"routers,omitempty"`
 }
 
 func handleListenersResp(msg *xdsapi.DiscoveryResponse) []*xdsapi.Listener {
 	listeners := make([]*xdsapi.Listener, 0)
 	for _, res := range msg.Resources {
 		listener := xdsapi.Listener{}
-		listener.Unmarshal(res.GetValue())
+		listener.XXX_Unmarshal(res.GetValue())
 		listeners = append(listeners, &listener)
 	}
 	return listeners
@@ -68,7 +67,7 @@ func handleEndpointsResp(msg *xdsapi.DiscoveryResponse) []*xdsapi.ClusterLoadAss
 	lbAssignments := make([]*xdsapi.ClusterLoadAssignment, 0)
 	for _, res := range msg.Resources {
 		lbAssignment := xdsapi.ClusterLoadAssignment{}
-		lbAssignment.Unmarshal(res.GetValue())
+		lbAssignment.XXX_Unmarshal(res.GetValue())
 		lbAssignments = append(lbAssignments, &lbAssignment)
 	}
 	return lbAssignments
@@ -78,7 +77,7 @@ func handleClustersResp(msg *xdsapi.DiscoveryResponse) []*xdsapi.Cluster {
 	clusters := make([]*xdsapi.Cluster, 0)
 	for _, res := range msg.Resources {
 		cluster := xdsapi.Cluster{}
-		cluster.Unmarshal(res.GetValue())
+		cluster.XXX_Unmarshal(res.GetValue())
 		clusters = append(clusters, &cluster)
 	}
 	return clusters
@@ -118,7 +117,7 @@ func handleXdsData(mosnConfig *v2.MOSNConfig, xdsFiles []string) error {
 func TestConfigAddAndUpdate(t *testing.T) {
 	mosnConfig := configmanager.Load(filepath.Join("testdata", "envoy.json"))
 	admin.Reset()
-	admin.SetMOSNConfig(mosnConfig)
+	admin.SetMosnConfig(mosnConfig)
 	Mosn := mosn.NewMosn(mosnConfig)
 	Mosn.Start()
 
@@ -127,7 +126,10 @@ func TestConfigAddAndUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var m effectiveConfig
-	json.Unmarshal(buf, &m)
+	err = json.Unmarshal(buf, &m)
+        if err != nil {
+		t.Fatal(err)
+        }
 
 	if m.MOSNConfig == nil {
 		t.Fatalf("mosn_config missing")
@@ -145,7 +147,10 @@ func TestConfigAddAndUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	json.Unmarshal(buf, &m)
+	err = json.Unmarshal(buf, &m)
+        if err != nil {
+		t.Fatal(err)
+        }
 
 	if m.MOSNConfig == nil {
 		t.Fatalf("mosn_config missing")
@@ -161,27 +166,22 @@ func TestConfigAddAndUpdate(t *testing.T) {
 			t.Fatalf("error listener[0.0.0.0_9080] config: %v", listener)
 		}
 
-		if len(listener.FilterChains[0].Filters) != 2 {
+		if len(listener.FilterChains[0].Filters) != 1 {
 			t.Fatalf("error listener[0.0.0.0_9080] config: %v", listener)
 		}
 
-		var filter v2.Filter
-		for _, data := range listener.FilterChains[0].Filters {
-			if data.Type == "connection_manager" {
-				filter = data
-			}
+		if len(m.Routers) != 1 {
+			t.Fatalf("listener[0.0.0.0_9080] router config is wrong")
 		}
-		if data, ok := filter.Config["virtual_hosts"]; !ok {
-			t.Fatalf("listener[0.0.0.0_9080] missing virtual_hosts")
-		} else {
-			hosts := data.([]interface{})
-			host := hosts[3].(map[string]interface{})
-			routers := host["routers"].([]interface{})
-			router := routers[0].(map[string]interface{})
-			route := router["route"].(map[string]interface{})
-			clusterName := route["cluster_name"].(string)
-
+		for _, rcfg := range m.Routers {
+			vhs := rcfg.VirtualHosts
+			if len(vhs) != 4 {
+				t.Fatalf("listener[0.0.0.0_9080] virtual hosts is not 3, got %d", len(vhs))
+			}
+			vh := vhs[3]
+			routers := vh.Routers
 			// 第一次 reviews 没有按照版本和权重来路由（v1,v2,v3 轮训）
+			clusterName := routers[0].Route.ClusterName
 			if clusterName != "outbound|9080||reviews.default.svc.cluster.local" {
 				t.Fatalf("reviews.default.svc.cluster.local:9080 should route to [outbound|9080||reviews.default.svc.cluster.local], but got %s", clusterName)
 			}
@@ -226,40 +226,26 @@ func TestConfigAddAndUpdate(t *testing.T) {
 		if listener.Name != "0.0.0.0_9080" || listener.BindToPort || len(listener.FilterChains) != 1 {
 			t.Fatalf("error listener config: %v", listener)
 		}
-
-		var filter v2.Filter
-		for _, data := range listener.FilterChains[0].Filters {
-			if data.Type == "connection_manager" {
-				filter = data
-			}
+		if len(m.Routers) != 1 {
+			t.Fatalf("listener[0.0.0.0_9080] router config is wrong")
 		}
-
-		if data, ok := filter.Config["virtual_hosts"]; !ok {
-			t.Fatalf("listener[0.0.0.0_9080] missing virtual_hosts, %v", filter)
-		} else {
-			hosts := data.([]interface{})
-			host := hosts[3].(map[string]interface{})
-			routers := host["routers"].([]interface{})
-			router := routers[0].(map[string]interface{})
-			route := router["route"].(map[string]interface{})
-			weightedClusters := route["weighted_clusters"].([]interface{})
-
-			// cluster_name is omitempty
-			if _, ok := route["cluster_name"]; ok {
-				t.Fatal("cluster_name is not omitempty")
+		for _, rcfg := range m.Routers {
+			vhs := rcfg.VirtualHosts
+			if len(vhs) != 4 {
+				t.Fatalf("listener[0.0.0.0_9080] virtual hosts is not 3, got %d", len(vhs))
 			}
-			if len(weightedClusters) != 2 {
+			vh := vhs[3]
+			router := vh.Routers[0].Route
+			if router.ClusterName != "" {
+				t.Fatalf("cluster_name is not omitempty: %s", router.ClusterName)
+			}
+			if len(router.WeightedClusters) != 2 {
 				t.Fatalf("reviews.default.svc.cluster.local:9080 should route to weighted_clusters")
 			}
-			cluster1 := weightedClusters[0].(map[string]interface{})["cluster"].(map[string]interface{})
-			cluster2 := weightedClusters[1].(map[string]interface{})["cluster"].(map[string]interface{})
-
-			clusterName1 := cluster1["name"].(string)
-			clusterName2 := cluster2["name"].(string)
-
-			weight1 := cluster1["weight"].(float64)
-			weight2 := cluster2["weight"].(float64)
-
+			clusterName1 := router.WeightedClusters[0].Cluster.Name
+			clusterName2 := router.WeightedClusters[1].Cluster.Name
+			weight1 := router.WeightedClusters[0].Cluster.Weight
+			weight2 := router.WeightedClusters[1].Cluster.Weight
 			// 第二次 review，按照 v1 和 v3 版本各 50% 的权重路由
 			if clusterName1 != "outbound|9080|v1|reviews.default.svc.cluster.local" || weight1 != 50 ||
 				clusterName2 != "outbound|9080|v3|reviews.default.svc.cluster.local" || weight2 != 50 {
@@ -293,7 +279,7 @@ func loadXdsData2() {
 	// Listeners
 	listener := &xdsapi.Listener{
 		Name: "0.0.0.0_9080",
-		Address: core.Address{
+		Address: &core.Address{
 			Address: &core.Address_SocketAddress{
 				SocketAddress: &core.SocketAddress{
 					Address: "0.0.0.0",
@@ -303,28 +289,34 @@ func loadXdsData2() {
 				},
 			},
 		},
-		UseOriginalDst: &types.BoolValue{Value: false},
+		UseOriginalDst: &wrappers.BoolValue{Value: false},
 		DeprecatedV1: &xdsapi.Listener_DeprecatedV1{
-			BindToPort: &types.BoolValue{Value: false},
+			BindToPort: &wrappers.BoolValue{Value: false},
 		},
-		FilterChains: []xdslistener.FilterChain{
-			xdslistener.FilterChain{
+		FilterChains: []*xdslistener.FilterChain{
+			{
 				FilterChainMatch: nil,
 				TlsContext:       &auth.DownstreamTlsContext{},
-				Filters: []xdslistener.Filter{
-					xdslistener.Filter{
+				Filters: []*xdslistener.Filter{
+					{
 						Name: "envoy.http_connection_manager",
 						ConfigType: &xdslistener.Filter_Config{
 							Config: MessageToStruct(&http_conn.HttpConnectionManager{
 								RouteSpecifier: &http_conn.HttpConnectionManager_RouteConfig{
 									RouteConfig: &xdsapi.RouteConfiguration{
-										VirtualHosts: []route.VirtualHost{
-											route.VirtualHost{},
-											route.VirtualHost{},
-											route.VirtualHost{},
-											route.VirtualHost{
-												Routes: []route.Route{
-													route.Route{
+										Name: "test_router_name",
+										VirtualHosts: []*route.VirtualHost{
+											&route.VirtualHost{},
+											&route.VirtualHost{},
+											&route.VirtualHost{},
+											&route.VirtualHost{
+												Routes: []*route.Route{
+													&route.Route{
+														Match: &route.RouteMatch{
+															PathSpecifier: &route.RouteMatch_Prefix{
+																Prefix: "/",
+															},
+														},
 														Action: &route.Route_Route{
 															Route: &route.RouteAction{
 																ClusterSpecifier: &route.RouteAction_WeightedClusters{
@@ -332,11 +324,11 @@ func loadXdsData2() {
 																		Clusters: []*route.WeightedCluster_ClusterWeight{
 																			&route.WeightedCluster_ClusterWeight{
 																				Name:   "outbound|9080|v1|reviews.default.svc.cluster.local",
-																				Weight: &types.UInt32Value{Value: 50},
+																				Weight: &wrappers.UInt32Value{Value: 50},
 																			},
 																			&route.WeightedCluster_ClusterWeight{
 																				Name:   "outbound|9080|v3|reviews.default.svc.cluster.local",
-																				Weight: &types.UInt32Value{Value: 50},
+																				Weight: &wrappers.UInt32Value{Value: 50},
 																			},
 																		},
 																	},
@@ -383,7 +375,7 @@ func loadXdsData() {
 	// Listeners
 	listener := &xdsapi.Listener{
 		Name: "0.0.0.0_9080",
-		Address: core.Address{
+		Address: &core.Address{
 			Address: &core.Address_SocketAddress{
 				SocketAddress: &core.SocketAddress{
 					Address: "0.0.0.0",
@@ -393,28 +385,34 @@ func loadXdsData() {
 				},
 			},
 		},
-		UseOriginalDst: &types.BoolValue{Value: false},
+		UseOriginalDst: &wrappers.BoolValue{Value: false},
 		DeprecatedV1: &xdsapi.Listener_DeprecatedV1{
-			BindToPort: &types.BoolValue{Value: false},
+			BindToPort: &wrappers.BoolValue{Value: false},
 		},
-		FilterChains: []xdslistener.FilterChain{
-			xdslistener.FilterChain{
+		FilterChains: []*xdslistener.FilterChain{
+			&xdslistener.FilterChain{
 				FilterChainMatch: nil,
 				TlsContext:       &auth.DownstreamTlsContext{},
-				Filters: []xdslistener.Filter{
-					xdslistener.Filter{
+				Filters: []*xdslistener.Filter{
+					&xdslistener.Filter{
 						Name: "envoy.http_connection_manager",
 						ConfigType: &xdslistener.Filter_Config{
 							Config: MessageToStruct(&http_conn.HttpConnectionManager{
 								RouteSpecifier: &http_conn.HttpConnectionManager_RouteConfig{
 									RouteConfig: &xdsapi.RouteConfiguration{
-										VirtualHosts: []route.VirtualHost{
-											route.VirtualHost{},
-											route.VirtualHost{},
-											route.VirtualHost{},
-											route.VirtualHost{
-												Routes: []route.Route{
-													route.Route{
+										Name: "test_router_name",
+										VirtualHosts: []*route.VirtualHost{
+											&route.VirtualHost{},
+											&route.VirtualHost{},
+											&route.VirtualHost{},
+											&route.VirtualHost{
+												Routes: []*route.Route{
+													&route.Route{
+														Match: &route.RouteMatch{
+															PathSpecifier: &route.RouteMatch_Prefix{
+																Prefix: "/",
+															},
+														},
 														Action: &route.Route_Route{
 															Route: &route.RouteAction{
 																ClusterSpecifier: &route.RouteAction_Cluster{
@@ -459,10 +457,10 @@ func loadXdsData() {
 }
 
 // MessageToStruct converts from proto message to proto Struct
-func MessageToStruct(msg proto.Message) *types.Struct {
-	s, err := util.MessageToStruct(msg)
+func MessageToStruct(msg proto.Message) *_struct.Struct {
+	s, err := xdsutil.MessageToStruct(msg)
 	if err != nil {
-		return &types.Struct{}
+		return &_struct.Struct{}
 	}
 	return s
 }

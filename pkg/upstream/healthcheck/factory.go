@@ -18,18 +18,19 @@
 package healthcheck
 
 import (
+	"sync"
+
 	v2 "mosn.io/mosn/pkg/config/v2"
 	"mosn.io/mosn/pkg/types"
 )
 
-var sessionFactories map[types.Protocol]types.HealthCheckSessionFactory
+var sessionFactories map[types.ProtocolName]types.HealthCheckSessionFactory
 
 func init() {
-	sessionFactories = make(map[types.Protocol]types.HealthCheckSessionFactory)
-	commonCallbacks = make(map[string]types.HealthCheckCb)
+	sessionFactories = make(map[types.ProtocolName]types.HealthCheckSessionFactory)
 }
 
-func RegisterSessionFactory(p types.Protocol, f types.HealthCheckSessionFactory) {
+func RegisterSessionFactory(p types.ProtocolName, f types.HealthCheckSessionFactory) {
 	sessionFactories[p] = f
 }
 
@@ -37,7 +38,7 @@ func RegisterSessionFactory(p types.Protocol, f types.HealthCheckSessionFactory)
 // by different health check session.
 // The Default session is TCPDial session
 func CreateHealthCheck(cfg v2.HealthCheck) types.HealthChecker {
-	f, ok := sessionFactories[types.Protocol(cfg.Protocol)]
+	f, ok := sessionFactories[types.ProtocolName(cfg.Protocol)]
 	if !ok {
 		// not registered, use default session factory
 		f = &TCPDialSessionFactory{}
@@ -47,13 +48,13 @@ func CreateHealthCheck(cfg v2.HealthCheck) types.HealthChecker {
 
 // common callback is not related to specific cluster, which can be registered before cluster create
 // and bind to health checker by config
-var commonCallbacks map[string]types.HealthCheckCb
+var commonCallbacks sync.Map
 
 func RegisterCommonCallbacks(name string, cb types.HealthCheckCb) bool {
-	if _, ok := commonCallbacks[name]; ok {
-		// can not regitser same name
+	// can not regitser same name
+	_, loaded := commonCallbacks.LoadOrStore(name, cb)
+	if loaded {
 		return false
 	}
-	commonCallbacks[name] = cb
-	return false
+	return true
 }

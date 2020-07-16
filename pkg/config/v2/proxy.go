@@ -49,3 +49,9 @@ type Proxy struct {
 type XProxyExtendConfig struct {
 	SubProtocol string `json:"sub_protocol,omitempty"`
 }
+
+// ProxyGeneralExtendConfig is a general config for proxy
+type ProxyGeneralExtendConfig struct {
+	Http2UseStream     bool `json:"http2_use_stream,omitempty"`
+	MaxRequestBodySize int  `json:"max_request_body_size,omitempty"`
+}

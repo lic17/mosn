@@ -86,7 +86,7 @@ type proxy struct {
 	routersWrapper     types.RouterWrapper // wrapper used to point to the routers instance
 	serverStreamConn   types.ServerStreamConnection
 	context            context.Context
-	activeSteams       *list.List // downstream requests
+	activeStreams      *list.List // downstream requests
 	asMux              sync.RWMutex
 	stats              *Stats
 	listenerStats      *Stats
@@ -98,7 +98,7 @@ func NewProxy(ctx context.Context, config *v2.Proxy) Proxy {
 	proxy := &proxy{
 		config:         config,
 		clusterManager: cluster.GetClusterMngAdapterInstance().ClusterManager,
-		activeSteams:   list.New(),
+		activeStreams:  list.New(),
 		stats:          globalStats,
 		context:        ctx,
 		accessLogs:     mosnctx.Get(ctx, types.ContextKeyAccessLogs).([]api.AccessLog),
@@ -108,10 +108,13 @@ func NewProxy(ctx context.Context, config *v2.Proxy) Proxy {
 	if err == nil {
 		log.DefaultLogger.Tracef("[proxy] extend config = %v", proxy.config.ExtendConfig)
 		var xProxyExtendConfig v2.XProxyExtendConfig
-		json.Unmarshal([]byte(extJSON), &xProxyExtendConfig)
-		if xProxyExtendConfig.SubProtocol != "" {
+		var proxyGeneralExtendConfig v2.ProxyGeneralExtendConfig
+		if json.Unmarshal([]byte(extJSON), &xProxyExtendConfig); xProxyExtendConfig.SubProtocol != "" {
 			proxy.context = mosnctx.WithValue(proxy.context, types.ContextSubProtocol, xProxyExtendConfig.SubProtocol)
 			log.DefaultLogger.Tracef("[proxy] extend config subprotocol = %v", xProxyExtendConfig.SubProtocol)
+		} else if err := json.Unmarshal([]byte(extJSON), &proxyGeneralExtendConfig); err == nil {
+			proxy.context = mosnctx.WithValue(proxy.context, types.ContextKeyProxyGeneralConfig, proxyGeneralExtendConfig)
+			log.DefaultLogger.Tracef("[proxy] extend config proxyGeneralExtendConfig = %v", proxyGeneralExtendConfig)
 		} else {
 			log.DefaultLogger.Tracef("[proxy] extend config subprotocol is empty")
 		}
@@ -125,7 +128,7 @@ func NewProxy(ctx context.Context, config *v2.Proxy) Proxy {
 	if routersWrapper := router.GetRoutersMangerInstance().GetRouterWrapperByName(proxy.config.RouterConfigName); routersWrapper != nil {
 		proxy.routersWrapper = routersWrapper
 	} else {
-		log.DefaultLogger.Errorf("[proxy] RouterConfigName:%s doesn't exit", proxy.config.RouterConfigName)
+		log.DefaultLogger.Alertf("proxy.config", "[proxy] RouterConfigName:%s doesn't exit", proxy.config.RouterConfigName)
 	}
 
 	proxy.downstreamListener = &downstreamCallbacks{
@@ -151,7 +154,7 @@ func (p *proxy) OnData(buf buffer.IoBuffer) api.FilterStatus {
 			} else {
 				size = buf.Len()
 			}
-			log.DefaultLogger.Errorf("[proxy] Protocol Auto error magic :%v", buf.Bytes()[:size])
+			log.DefaultLogger.Alertf("proxy.auto", "[proxy] Protocol Auto error magic :%v", buf.Bytes()[:size])
 			p.readCallbacks.Connection().Close(api.NoFlush, api.OnReadErrClose)
 			return api.Stop
 		}
@@ -175,7 +178,7 @@ func (p *proxy) onDownstreamEvent(event api.ConnectionEvent) {
 		p.asMux.RLock()
 		defer p.asMux.RUnlock()
 
-		for urEle := p.activeSteams.Front(); urEle != nil; urEle = urEleNext {
+		for urEle := p.activeStreams.Front(); urEle != nil; urEle = urEleNext {
 			urEleNext = urEle.Next()
 
 			ds := urEle.Value.(*downStream)
@@ -192,6 +195,13 @@ func (p *proxy) ReadDisableDownstream(disable bool) {
 	// TODO
 }
 
+func (p *proxy) ActiveStreamSize() int {
+	if p.activeStreams == nil {
+		return 0
+	}
+	return p.activeStreams.Len()
+}
+
 func (p *proxy) InitializeReadFilterCallbacks(cb api.ReadFilterCallbacks) {
 	p.readCallbacks = cb
 
@@ -205,7 +215,7 @@ func (p *proxy) InitializeReadFilterCallbacks(cb api.ReadFilterCallbacks) {
 
 	p.readCallbacks.Connection().AddConnectionEventListener(p.downstreamListener)
 	if p.config.DownstreamProtocol != string(protocol.Auto) {
-		p.serverStreamConn = stream.CreateServerStreamConnection(p.context, types.Protocol(p.config.DownstreamProtocol), p.readCallbacks.Connection(), p)
+		p.serverStreamConn = stream.CreateServerStreamConnection(p.context, types.ProtocolName(p.config.DownstreamProtocol), p.readCallbacks.Connection(), p)
 	}
 }
 
@@ -224,13 +234,14 @@ func (p *proxy) NewStreamDetect(ctx context.Context, responseSender types.Stream
 			}
 
 			for _, f := range ffs {
-				f.CreateFilterChain(p.context, stream)
+				// the ctx from stream
+				f.CreateFilterChain(ctx, stream)
 			}
 		}
 	}
 
 	p.asMux.Lock()
-	stream.element = p.activeSteams.PushBack(stream)
+	stream.element = p.activeStreams.PushBack(stream)
 	p.asMux.Unlock()
 
 	return stream
@@ -252,6 +263,8 @@ func (p *proxy) streamResetReasonToResponseFlag(reason types.StreamResetReason) 
 		return api.UpstreamOverflow
 	case types.StreamRemoteReset:
 		return api.UpstreamRemoteReset
+	case types.UpstreamGlobalTimeout, types.UpstreamPerTryTimeout:
+		return api.UpstreamRequestTimeout
 	}
 
 	return 0
@@ -260,7 +273,7 @@ func (p *proxy) streamResetReasonToResponseFlag(reason types.StreamResetReason) 
 func (p *proxy) deleteActiveStream(s *downStream) {
 	if s.element != nil {
 		p.asMux.Lock()
-		p.activeSteams.Remove(s.element)
+		p.activeStreams.Remove(s.element)
 		p.asMux.Unlock()
 		s.element = nil
 	}

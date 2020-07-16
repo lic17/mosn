@@ -19,13 +19,13 @@ package cluster
 
 import (
 	"context"
-	"mosn.io/api"
+	"net"
 	"testing"
 
+	"mosn.io/api"
 	v2 "mosn.io/mosn/pkg/config/v2"
 	mosnctx "mosn.io/mosn/pkg/context"
 	"mosn.io/mosn/pkg/types"
-	"net"
 )
 
 // LbCtx is a types.LoadBalancerContext implementation
@@ -53,6 +53,10 @@ func (c *LbCtx) DownstreamContext() context.Context {
 
 func (c *LbCtx) DownstreamCluster() types.ClusterInfo {
 	return c.cluster
+}
+
+func (c *LbCtx) DownstreamRoute() api.Route {
+	return nil
 }
 
 type Header struct {
@@ -90,12 +94,12 @@ func (h *Header) ByteSize() uint64 {
 func TestChooseHost(t *testing.T) {
 	// check use original dst
 	hostSet := &hostSet{}
-	orilb := newOriginalDstLoadBalancer(hostSet)
+	orilb := newOriginalDstLoadBalancer(nil, hostSet)
 	orihost := "127.0.0.1:8888"
 	oriRemoteAddr, _ := net.ResolveTCPAddr("", orihost)
 	ctx := mosnctx.WithValue(context.Background(), types.ContextOriRemoteAddr, oriRemoteAddr)
 	oriDstCfg := &v2.LBOriDstConfig{
-		UseHttpHeader: false,
+		UseHeader: false,
 	}
 
 	cluster := &clusterInfo{
@@ -116,7 +120,7 @@ func TestChooseHost(t *testing.T) {
 
 	// check use host header
 	oriDstCfg = &v2.LBOriDstConfig{
-		UseHttpHeader: true,
+		UseHeader: true,
 	}
 
 	cluster = &clusterInfo{

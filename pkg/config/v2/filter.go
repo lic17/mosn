@@ -42,21 +42,47 @@ type DelayInjectConfig struct {
 	DelayDurationConfig api.DurationConfig `json:"fixed_delay,omitempty"`
 }
 
+type StreamGzip struct {
+	GzipLevel     uint32   `json:"gzip_level,omitempty"`
+	ContentLength uint32   `json:"content_length,omitempty"`
+	ContentType   []string `json:"content_types,omitempty"`
+}
+
+// Listener Filter's Type
+const (
+	ORIGINALDST_LISTENER_FILTER = "original_dst"
+)
+
+type FaultToleranceFilterConfig struct {
+	Enabled               bool `json:"enabled"`
+	ExceptionTypes        map[uint32]bool
+	TimeWindow            int64
+	LeastWindowCount      int64
+	ExceptionRateMultiple float64
+	MaxIpCount            uint64
+	MaxIpRatio            float64
+	RecoverTime           int64
+	TaskSize              int64
+}
+
 // Network Filter's Type
 const (
-	CONNECTION_MANAGER          = "connection_manager"
+	CONNECTION_MANAGER          = "connection_manager" // deprecated
 	DEFAULT_NETWORK_FILTER      = "proxy"
 	TCP_PROXY                   = "tcp_proxy"
 	FAULT_INJECT_NETWORK_FILTER = "fault_inject"
 	RPC_PROXY                   = "rpc_proxy"
 	X_PROXY                     = "x_proxy"
+	Transcoder                  = "transcoder"
 )
 
 // Stream Filter's Type
 const (
-	MIXER        = "mixer"
-	FaultStream  = "fault"
-	PayloadLimit = "payload_limit"
+	MIXER          = "mixer"
+	FaultStream    = "fault"
+	PayloadLimit   = "payload_limit"
+	Gzip           = "gzip"
+	FaultTolerance = "fault_tolerance"
 )
 
 // HealthCheckFilter
@@ -76,6 +102,11 @@ func (hf *HealthCheckFilter) UnmarshalJSON(b []byte) error {
 	}
 	hf.CacheTime = hf.CacheTimeConfig.Duration
 	return nil
+}
+
+// Transcoder
+type StreamTranscoder struct {
+	Type string `json:"type"`
 }
 
 // FaultInject

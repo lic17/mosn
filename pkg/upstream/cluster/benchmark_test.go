@@ -18,103 +18,21 @@
 package cluster
 
 import (
+	"context"
+	"math/rand"
+	"os"
 	"testing"
 
 	"mosn.io/api"
 	v2 "mosn.io/mosn/pkg/config/v2"
+	mosnctx "mosn.io/mosn/pkg/context"
 	"mosn.io/mosn/pkg/log"
 	"mosn.io/mosn/pkg/types"
 )
 
 func TestMain(m *testing.M) {
 	log.DefaultLogger.SetLogLevel(log.ERROR)
-	m.Run()
-}
-
-// BenchmarkHostSetRefresh test host heatlthy state changed
-func BenchmarkHostSetRefresh(b *testing.B) {
-	subsetKeys := [][]string{
-		[]string{"zone", "version"},
-		[]string{"zone"},
-	}
-	createHostSet := func(m map[int]api.Metadata) *hostSet {
-		count := 0
-		for cnt := range m {
-			count += cnt
-		}
-		pool := makePool(count)
-		totalHosts := make([]types.Host, 0, count)
-		for cnt, meta := range m {
-			totalHosts = append(totalHosts, pool.MakeHosts(cnt, meta)...)
-		}
-		hs := &hostSet{}
-		hs.setFinalHost(totalHosts)
-		for _, meta := range m {
-			for _, keys := range subsetKeys {
-				kvs := ExtractSubsetMetadata(keys, meta)
-				hs.createSubset(func(h types.Host) bool {
-					return HostMatches(kvs, h)
-				})
-			}
-		}
-		return hs
-	}
-	b.Run("RefreshSimple100", func(b *testing.B) {
-		config := map[int]api.Metadata{
-			100: nil,
-		}
-		hs := createHostSet(config)
-		host := hs.Hosts()[50]
-		for i := 0; i < b.N; i++ {
-			if i%2 == 0 {
-				host.SetHealthFlag(types.FAILED_ACTIVE_HC)
-			} else {
-				host.ClearHealthFlag(types.FAILED_ACTIVE_HC)
-			}
-			hs.refreshHealthHost(host)
-		}
-	})
-	b.Run("RefreshSimple1000", func(b *testing.B) {
-		config := map[int]api.Metadata{
-			1000: nil,
-		}
-		hs := createHostSet(config)
-		host := hs.Hosts()[500]
-		for i := 0; i < b.N; i++ {
-			if i%2 == 0 {
-				host.SetHealthFlag(types.FAILED_ACTIVE_HC)
-			} else {
-				host.ClearHealthFlag(types.FAILED_ACTIVE_HC)
-			}
-			hs.refreshHealthHost(host)
-		}
-	})
-	b.Run("RefreshMeta1000", func(b *testing.B) {
-		config := map[int]api.Metadata{
-			100: nil,
-			300: api.Metadata{
-				"zone":    "a",
-				"version": "1.0",
-			},
-			400: api.Metadata{
-				"zone":    "a",
-				"version": "2.0",
-			},
-			200: api.Metadata{
-				"zone": "b",
-			},
-		}
-		hs := createHostSet(config)
-		host := hs.Hosts()[150] // zone:a, version:1.0
-		for i := 0; i < b.N; i++ {
-			if i%2 == 0 {
-				host.SetHealthFlag(types.FAILED_ACTIVE_HC)
-			} else {
-				host.ClearHealthFlag(types.FAILED_ACTIVE_HC)
-			}
-			hs.refreshHealthHost(host)
-		}
-	})
+	os.Exit(m.Run())
 }
 
 func BenchmarkHostConfig(b *testing.B) {
@@ -296,7 +214,22 @@ func BenchmarkRandomLB(b *testing.B) {
 	hostSet := &hostSet{}
 	hosts := makePool(10).MakeHosts(10, nil)
 	hostSet.setFinalHost(hosts)
-	lb := newRandomLoadBalancer(hostSet)
+	lb := newRandomLoadBalancer(nil, hostSet)
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			lb.ChooseHost(nil)
+		}
+	})
+}
+
+func BenchmarkRandomLBWithUnhealthyHost(b *testing.B) {
+	hostSet := &hostSet{}
+	hosts := makePool(10).MakeHosts(10, nil)
+	hostSet.setFinalHost(hosts)
+	lb := newRandomLoadBalancer(nil, hostSet)
+	for i := 0; i < 5; i++ {
+		hosts[i].SetHealthFlag(api.FAILED_ACTIVE_HC)
+	}
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			lb.ChooseHost(nil)
@@ -308,7 +241,34 @@ func BenchmarkRoundRobinLB(b *testing.B) {
 	hostSet := &hostSet{}
 	hosts := makePool(10).MakeHosts(10, nil)
 	hostSet.setFinalHost(hosts)
-	lb := rrFactory.newRoundRobinLoadBalancer(hostSet)
+	lb := rrFactory.newRoundRobinLoadBalancer(nil, hostSet)
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			lb.ChooseHost(nil)
+		}
+	})
+}
+
+func BenchmarkRoundRobinLBWithUnhealthyHost(b *testing.B) {
+	hostSet := &hostSet{}
+	hosts := makePool(10).MakeHosts(10, nil)
+	hostSet.setFinalHost(hosts)
+	lb := rrFactory.newRoundRobinLoadBalancer(nil, hostSet)
+	for i := 0; i < 5; i++ {
+		hosts[i].SetHealthFlag(api.FAILED_OUTLIER_CHECK)
+	}
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			lb.ChooseHost(nil)
+		}
+	})
+}
+
+func BenchmarkLeastActiveRequestLB(b *testing.B) {
+	hostSet := &hostSet{}
+	hosts := makePool(10).MakeHosts(10, map[string]string{"cluster": ""})
+	hostSet.setFinalHost(hosts)
+	lb := newleastActiveRequestLoadBalancer(nil, hostSet)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			lb.ChooseHost(nil)
@@ -372,4 +332,90 @@ func BenchmarkSubsetLB(b *testing.B) {
 			}
 		})
 	})
+}
+
+func BenchmarkMaglevLB(b *testing.B) {
+	hostSet := getMockHostSet(20000)
+	mgvLb := newMaglevLoadBalancer(nil, hostSet)
+
+	testProtocol := types.ProtocolName("SomeProtocol")
+	mockRoute := &mockRoute{
+		routeRule: &mockRouteRule{
+			policy: &mockPolicy{
+				hashPolicy: &mockHashPolicy{},
+			},
+		},
+	}
+	ctx := mosnctx.WithValue(context.Background(), types.ContextKeyDownStreamProtocol, testProtocol)
+	lbctx := &mockLbContext{
+		context: ctx,
+		route:   mockRoute,
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = mgvLb.ChooseHost(lbctx)
+	}
+}
+
+func BenchmarkMaglevLBParallel(b *testing.B) {
+	hostSet := getMockHostSet(20000)
+	mgvLb := newMaglevLoadBalancer(nil, hostSet)
+
+	testProtocol := types.ProtocolName("SomeProtocol")
+	mockRoute := &mockRoute{
+		routeRule: &mockRouteRule{
+			policy: &mockPolicy{
+				hashPolicy: &mockHashPolicy{},
+			},
+		},
+	}
+	ctx := mosnctx.WithValue(context.Background(), types.ContextKeyDownStreamProtocol, testProtocol)
+	lbctx := &mockLbContext{
+		context: ctx,
+		route:   mockRoute,
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = mgvLb.ChooseHost(lbctx)
+		}
+	})
+}
+
+func BenchmarkMaglevLBFallback(b *testing.B) {
+	hostSet := getMockHostSet(20000)
+	mgvLb := newMaglevLoadBalancer(nil, hostSet)
+
+	// make sure 0 index hasn -> host-15748 is unhealthy, to ensure fallback
+	hostSet.Hosts()[15748].SetHealthFlag(api.FAILED_ACTIVE_HC)
+	// randomly set 10000 of 20000 host unhealthy
+	rand.Seed(0)
+	for i := 0; i < 10000; i++ {
+		randIndex := rand.Intn(19999)
+		hostSet.Hosts()[randIndex].SetHealthFlag(api.FAILED_ACTIVE_HC)
+	}
+
+	testProtocol := types.ProtocolName("SomeProtocol")
+	mockRoute := &mockRoute{
+		routeRule: &mockRouteRule{
+			policy: &mockPolicy{
+				hashPolicy: &mockHashPolicy{},
+			},
+		},
+	}
+	ctx := mosnctx.WithValue(context.Background(), types.ContextKeyDownStreamProtocol, testProtocol)
+	lbctx := &mockLbContext{
+		context: ctx,
+		route:   mockRoute,
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = mgvLb.ChooseHost(lbctx)
+	}
 }

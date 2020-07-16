@@ -27,7 +27,7 @@ import (
 	"mosn.io/mosn/pkg/types"
 )
 
-var mockProtocol = types.Protocol("mockProtocol")
+var mockProtocol = types.ProtocolName("mockProtocol")
 
 func init() {
 	trace.RegisterDriver("SOFATracer", trace.NewDefaultDriverImpl())
@@ -124,6 +124,10 @@ type mockClusterSnapshot struct {
 	types.ClusterSnapshot
 }
 
+func (mcs *mockClusterSnapshot) ClusterInfo() types.ClusterInfo {
+	return nil
+}
+
 type mockResponseSender struct {
 	// receive data
 	headers  api.HeaderMap
@@ -192,6 +196,7 @@ func (tracer *mockTracer) Start(ctx context.Context, request interface{}, startT
 }
 
 type mockSpan struct {
+	inject   bool
 	finished bool
 }
 
@@ -225,9 +230,19 @@ func (s *mockSpan) FinishSpan() {
 	s.finished = true
 }
 
-func (s *mockSpan) InjectContext(requestHeaders types.HeaderMap) {
+func (s *mockSpan) InjectContext(requestHeaders types.HeaderMap, requestInfo types.RequestInfo) {
+	requestHeaders.Set("test-inject", "mock")
+	s.inject = true
 }
 
 func (s *mockSpan) SpawnChild(operationName string, startTime time.Time) types.Span {
 	return nil
+}
+
+type mockServerConn struct {
+	types.ServerStreamConnection
+}
+
+func (s *mockServerConn) Protocol() api.Protocol {
+	return "mockProtocol"
 }

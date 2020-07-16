@@ -52,12 +52,14 @@ type RouterActionConfig struct {
 	UpstreamProtocol        string               `json:"upstream_protocol,omitempty"`
 	ClusterHeader           string               `json:"cluster_header,omitempty"`
 	WeightedClusters        []WeightedCluster    `json:"weighted_clusters,omitempty"`
+	HashPolicy              []HashPolicy         `json:"hash_policy,omitempty"`
 	MetadataConfig          *MetadataConfig      `json:"metadata_match,omitempty"`
 	TimeoutConfig           api.DurationConfig   `json:"timeout,omitempty"`
 	RetryPolicy             *RetryPolicy         `json:"retry_policy,omitempty"`
 	PrefixRewrite           string               `json:"prefix_rewrite,omitempty"`
 	HostRewrite             string               `json:"host_rewrite,omitempty"`
 	AutoHostRewrite         bool                 `json:"auto_host_rewrite,omitempty"`
+	AutoHostRewriteHeader   string               `json:"auto_host_rewrite_header,omitempty"`
 	RequestHeadersToAdd     []*HeaderValueOption `json:"request_headers_to_add,omitempty"`
 	ResponseHeadersToAdd    []*HeaderValueOption `json:"response_headers_to_add,omitempty"`
 	ResponseHeadersToRemove []string             `json:"response_headers_to_remove,omitempty"`
@@ -173,8 +175,7 @@ type HeaderValue struct {
 	Value string `json:"value,omitempty"`
 }
 
-// RouterConfiguration is a filter for routers
-// Filter type is:  "CONNECTION_MANAGER"
+// RouterConfiguration is a config for routers
 type RouterConfiguration struct {
 	VirtualHosts []*VirtualHost `json:"-"`
 	RouterConfigurationConfig
@@ -188,6 +189,7 @@ func (rc RouterConfiguration) MarshalJSON() (b []byte, err error) {
 	}
 	// dynamic mode, should write file
 	// first, get all the files in the directory
+	os.MkdirAll(rc.RouterConfigPath, 0755)
 	files, err := ioutil.ReadDir(rc.RouterConfigPath)
 	if err != nil {
 		return nil, err
@@ -205,6 +207,9 @@ func (rc RouterConfiguration) MarshalJSON() (b []byte, err error) {
 		data, err := json.MarshalIndent(vh, "", " ")
 		if err != nil {
 			return nil, err
+		}
+		if len(fileName) > MaxFilePath {
+			fileName = fileName[:MaxFilePath]
 		}
 		fileName = fileName + ".json"
 		delete(allFiles, fileName)

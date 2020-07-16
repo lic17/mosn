@@ -54,10 +54,12 @@ type ClusterType string
 
 // Group of cluster type
 const (
-	STATIC_CLUSTER  ClusterType = "STATIC"
-	SIMPLE_CLUSTER  ClusterType = "SIMPLE"
-	DYNAMIC_CLUSTER ClusterType = "DYNAMIC"
-	EDS_CLUSTER     ClusterType = "EDS"
+	STATIC_CLUSTER      ClusterType = "STATIC"
+	SIMPLE_CLUSTER      ClusterType = "SIMPLE"
+	DYNAMIC_CLUSTER     ClusterType = "DYNAMIC"
+	EDS_CLUSTER         ClusterType = "EDS"
+	ORIGINALDST_CLUSTER ClusterType = "ORIGINAL_DST"
+	STRICT_DNS_CLUSTER  ClusterType = "STRICT_DNS"
 )
 
 // LbType
@@ -65,8 +67,18 @@ type LbType string
 
 // Group of load balancer type
 const (
-	LB_RANDOM     LbType = "LB_RANDOM"
-	LB_ROUNDROBIN LbType = "LB_ROUNDROBIN"
+	LB_RANDOM        LbType = "LB_RANDOM"
+	LB_ROUNDROBIN    LbType = "LB_ROUNDROBIN"
+	LB_ORIGINAL_DST  LbType = "LB_ORIGINAL_DST"
+	LB_LEAST_REQUEST LbType = "LB_LEAST_REQUEST"
+	LB_MAGLEV        LbType = "LB_MAGLEV"
+)
+
+type DnsLookupFamily string
+
+const (
+	V4Only DnsLookupFamily = "V4_ONLY"
+	V6Only DnsLookupFamily = "V6_ONLY"
 )
 
 // Cluster represents a cluster's information
@@ -85,6 +97,22 @@ type Cluster struct {
 	TLS                  TLSConfig           `json:"tls_context,omitempty"`
 	Hosts                []Host              `json:"hosts,omitempty"`
 	ConnectTimeout       *api.DurationConfig `json:"connect_timeout,omitempty"`
+	LbConfig             IsCluster_LbConfig  `json:"lbconfig,omitempty"`
+	DnsRefreshRate       *api.DurationConfig `json:"dns_refresh_rate,omitempty"`
+	RespectDnsTTL        bool                `json:"respect_dns_ttl,omitempty"`
+	DnsLookupFamily      DnsLookupFamily     `json:"dns_lookup_family,omitempty"`
+	DnsResolverConfig    DnsResolverConfig   `json:"dns_resolvers,omitempty"`
+	DnsResolverFile      string              `json:"dns_resolver_file,omitempty"`
+	DnsResolverPort      string              `json:"dns_resolver_port,omitempty"`
+}
+
+type DnsResolverConfig struct {
+	Servers  []string `json:"servers,omitempty"`
+	Search   []string `json:"search,omitempty"`
+	Port     string   `json:"port,omitempty"`
+	Ndots    int      `json:"ndots,omitempty"`
+	Timeout  int      `json:"timeout,omitempty"`
+	Attempts int      `json:"attempts,omitempty"`
 }
 
 // HealthCheck is a configuration of health check
@@ -174,8 +202,8 @@ type LBSubsetConfig struct {
 
 // LBOriDstConfig for OriDst load balancer.
 type LBOriDstConfig struct {
-	UseHttpHeader bool   `json:"use_http_header,omitempty"`
-	HeaderName    string `json:"header_name,omitempty"`
+	UseHeader  bool   `json:"use_header,omitempty"`
+	HeaderName string `json:"header_name,omitempty"`
 }
 
 // ClusterManagerConfig for making up cluster manager
@@ -237,6 +265,8 @@ func (cc ClusterManagerConfig) MarshalJSON() (b []byte, err error) {
 	}
 	// dynamic mode, should write file
 	// first, get all the files in the directory
+	// try to make dir if not exists
+	os.MkdirAll(cc.ClusterConfigPath, 0755)
 	files, err := ioutil.ReadDir(cc.ClusterConfigPath)
 	if err != nil {
 		return nil, err
@@ -254,6 +284,9 @@ func (cc ClusterManagerConfig) MarshalJSON() (b []byte, err error) {
 		data, err := json.MarshalIndent(cluster, "", " ")
 		if err != nil {
 			return nil, err
+		}
+		if len(fileName) > MaxFilePath {
+			fileName = fileName[:MaxFilePath]
 		}
 		fileName = fileName + ".json"
 		delete(allFiles, fileName)

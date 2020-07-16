@@ -23,8 +23,12 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"strconv"
 
+	gometrics "github.com/rcrowley/go-metrics"
 	"mosn.io/mosn/pkg/admin/store"
+	"mosn.io/mosn/pkg/config/v2"
+	"mosn.io/mosn/pkg/featuregate"
 	"mosn.io/mosn/pkg/log"
 	"mosn.io/mosn/pkg/metrics"
 	"mosn.io/mosn/pkg/metrics/sink/console"
@@ -64,15 +68,73 @@ func configDump(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if buf, err := store.Dump(); err == nil {
-		log.DefaultLogger.Infof("[admin api] [config dump] config dump")
-		w.WriteHeader(200)
-		w.Write(buf)
-	} else {
-		log.DefaultLogger.Alertf(types.ErrorKeyAdmin, "api: %s, error: %v", "config dump", err)
+	r.ParseForm()
+	if len(r.Form) == 0 {
+		if buf, err := store.Dump(); err == nil {
+			log.DefaultLogger.Infof("[admin api] [config dump] config dump")
+			w.WriteHeader(200)
+			w.Write(buf)
+		} else {
+			log.DefaultLogger.Alertf(types.ErrorKeyAdmin, "api: %s, error: %v", "config dump", err)
+			w.WriteHeader(500)
+			msg := fmt.Sprintf(errMsgFmt, "internal error")
+			fmt.Fprint(w, msg)
+		}
+		return
+	}
+	if len(r.Form) > 1 {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "only support one parameter")
+		return
+	}
+	var info interface{}
+	for key, param := range r.Form {
+		switch key {
+		case "mosnconfig":
+			info = store.GetMOSNConfig(store.CfgTypeMOSN)
+		case "allrouters":
+			info = store.GetMOSNConfig(store.CfgTypeRouter)
+		case "allclusters":
+			info = store.GetMOSNConfig(store.CfgTypeCluster)
+		case "alllisteners":
+			info = store.GetMOSNConfig(store.CfgTypeListener)
+		case "router":
+			v := store.GetMOSNConfig(store.CfgTypeRouter)
+			routerInfo, ok := v.(map[string]v2.RouterConfiguration)
+			if ok && len(param) > 0 {
+				info = routerInfo[param[0]]
+			}
+		case "cluster":
+			v := store.GetMOSNConfig(store.CfgTypeCluster)
+			clusterInfo, ok := v.(map[string]v2.Cluster)
+			if ok && len(param) > 0 {
+				info = clusterInfo[param[0]]
+			}
+		case "listener":
+			v := store.GetMOSNConfig(store.CfgTypeListener)
+			listenerInfo, ok := v.(map[string]v2.Listener)
+			if ok && len(param) > 0 {
+				info = listenerInfo[param[0]]
+			}
+		}
+	}
+	if info == nil {
+		log.DefaultLogger.Alertf(types.ErrorKeyAdmin, "api: %s, parameters:%v", "config dump", r.Form)
 		w.WriteHeader(500)
 		msg := fmt.Sprintf(errMsgFmt, "internal error")
 		fmt.Fprint(w, msg)
+	} else {
+		buf, err := json.MarshalIndent(info, "", " ")
+		if err != nil {
+			log.DefaultLogger.Alertf(types.ErrorKeyAdmin, "api: %s, parameters:%v, error: %v", "config dump", r.Form, err)
+			w.WriteHeader(500)
+			msg := fmt.Sprintf(errMsgFmt, "internal error")
+			fmt.Fprint(w, msg)
+		} else {
+			log.DefaultLogger.Infof("[admin api] [config dump] config dump, parameters:%v", r.Form)
+			w.WriteHeader(200)
+			w.Write(buf)
+		}
 	}
 }
 
@@ -83,9 +145,38 @@ func statsDump(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.DefaultLogger.Infof("[admin api]  [stats dump] stats dump")
+	allMetrics := metrics.GetAll()
 	w.WriteHeader(200)
 	sink := console.NewConsoleSink()
-	sink.Flush(w, metrics.GetAll())
+	sink.Flush(w, allMetrics)
+	return
+}
+
+func statsDumpProxyTotal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		log.DefaultLogger.Alertf(types.ErrorKeyAdmin, "api: %s, error: invalid method: %s", "stats dump", r.Method)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	log.DefaultLogger.Infof("[admin api]  [stats dump] stats dump")
+	w.WriteHeader(http.StatusOK)
+	m := metrics.GetProxyTotal()
+	all := ""
+	if m != nil {
+		m.Each(func(key string, i interface{}) {
+			switch metric := i.(type) {
+			case gometrics.Counter:
+				all += fmt.Sprintf("%s:%s\n", key, strconv.FormatInt(metric.Count(), 10))
+			case gometrics.Gauge:
+				all += fmt.Sprintf("%s:%s\n", key, strconv.FormatInt(metric.Value(), 10))
+			case gometrics.Histogram:
+				h := metric.Snapshot()
+				all += fmt.Sprintf("%s:%s\n", key+"_min", strconv.FormatInt(h.Min(), 10))
+				all += fmt.Sprintf("%s:%s\n", key+"_max", strconv.FormatInt(h.Max(), 10))
+			}
+		})
+	}
+	w.Write([]byte(all))
 }
 
 // update log level
@@ -200,4 +291,70 @@ func getState(w http.ResponseWriter, r *http.Request) {
 func pluginApi(w http.ResponseWriter, r *http.Request) {
 	log.DefaultLogger.Infof("[admin api] [plugin] url %s", r.URL.RequestURI())
 	plugin.AdminApi(w, r)
+}
+
+func knownFeatures(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		log.DefaultLogger.Alertf(types.ErrorKeyAdmin, "api: %s, error: invalid method: %s", "known features", r.Method)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	r.ParseForm()
+	if len(r.Form) == 0 {
+		data, err := json.MarshalIndent(featuregate.KnownFeatures(), "", " ")
+		if err != nil {
+			log.DefaultLogger.Alertf(types.ErrorKeyAdmin, "api: %s, error: %v", "known features", err)
+			w.WriteHeader(500)
+			msg := fmt.Sprintf(errMsgFmt, "internal error")
+			fmt.Fprint(w, msg)
+			return
+		}
+		w.Write(data)
+		return
+	}
+	// support only one feature
+	value := r.FormValue("key")
+	fmt.Fprintf(w, "%t", featuregate.Enabled(featuregate.Feature(value)))
+}
+
+type envResults struct {
+	Env      map[string]string `json:"env,omityempty"`
+	NotFound []string          `json:"not_found,omityempty"`
+}
+
+func getEnv(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		log.DefaultLogger.Alertf(types.ErrorKeyAdmin, "api: %s, error: invalid method: %s", "get env", r.Method)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	r.ParseForm()
+	values, ok := r.Form["key"]
+	if !ok {
+		log.DefaultLogger.Alertf(types.ErrorKeyAdmin, "api: %s no env key", "get env")
+		w.WriteHeader(http.StatusBadRequest)
+		msg := fmt.Sprintf(errMsgFmt, "no env key")
+		fmt.Fprint(w, msg)
+		return
+	}
+	results := &envResults{
+		Env: make(map[string]string),
+	}
+	for _, key := range values {
+		v, exists := os.LookupEnv(key)
+		if !exists {
+			results.NotFound = append(results.NotFound, key)
+		} else {
+			results.Env[key] = v
+		}
+	}
+	data, err := json.MarshalIndent(results, "", " ")
+	if err != nil {
+		log.DefaultLogger.Alertf(types.ErrorKeyAdmin, "api: %s, error: %v", "get env", err)
+		w.WriteHeader(500)
+		msg := fmt.Sprintf(errMsgFmt, "internal error")
+		fmt.Fprint(w, msg)
+		return
+	}
+	w.Write(data)
 }

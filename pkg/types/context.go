@@ -41,10 +41,14 @@ const (
 	ContextKeyActiveSpan
 	ContextKeyTraceId
 	ContextKeyVariables
+	ContextKeyProxyGeneralConfig
+	ContextKeyDownStreamProtocol
+	ContextKeyDownStreamHeaders
 	ContextKeyEnd
 )
 
 // GlobalProxyName represents proxy name for metrics
 const (
-	GlobalProxyName = "global"
+	GlobalProxyName       = "global"
+	GlobalShutdownTimeout = "GlobalShutdownTimeout"
 )

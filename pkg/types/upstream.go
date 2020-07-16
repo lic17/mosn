@@ -113,20 +113,7 @@ type HostPredicate func(Host) bool
 type HostSet interface {
 	// Hosts returns all hosts that make up the set at the current time.
 	Hosts() []Host
-
-	// HealthyHosts returns all healthy hosts
-	HealthyHosts() []Host
 }
-
-// HealthFlag type
-type HealthFlag int
-
-const (
-	// The host is currently failing active health checks.
-	FAILED_ACTIVE_HC HealthFlag = 0x1
-	// The host is currently considered an outlier and has been ejected.
-	FAILED_OUTLIER_CHECK HealthFlag = 0x02
-)
 
 // Host is an upstream host
 type Host interface {
@@ -141,21 +128,6 @@ type Host interface {
 	// Create a connection for this host.
 	CreateConnection(context context.Context) CreateConnectionData
 
-	// ClearHealthFlag clear the input flag
-	ClearHealthFlag(flag HealthFlag)
-
-	// ContainHealthFlag checks whether the heatlhy state contains the flag
-	ContainHealthFlag(flag HealthFlag) bool
-
-	// SetHealthFlag set the input flag
-	SetHealthFlag(flag HealthFlag)
-
-	// HealthFlag returns the current healthy flag
-	HealthFlag() HealthFlag
-
-	// Health checks whether the host is healthy or not
-	Health() bool
-
 	// Address returns the host's Addr structure
 	Address() net.Addr
 	// Config creates a host config by the host attributes
@@ -166,6 +138,9 @@ type Host interface {
 type ClusterInfo interface {
 	// Name returns the cluster name
 	Name() string
+
+	// ClusterType returns the cluster type
+	ClusterType() v2.ClusterType
 
 	// LbType returns the cluster's load balancer type
 	LbType() LoadBalancerType
@@ -193,6 +168,9 @@ type ClusterInfo interface {
 
 	// LbOriDstInfo returns the load balancer oridst config
 	LbOriDstInfo() LBOriDstInfo
+
+	// Optional configuration for the load balancing algorithm selected by
+	LbConfig() v2.IsCluster_LbConfig
 }
 
 // ResourceManager manages different types of Resource
@@ -216,6 +194,8 @@ type Resource interface {
 	Increase()
 	Decrease()
 	Max() uint64
+	Cur() int64
+	UpdateCur(int64)
 }
 
 // HostStats defines a host's statistics information
