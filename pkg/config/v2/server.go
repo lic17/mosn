@@ -20,7 +20,9 @@ package v2
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 
 	"mosn.io/api"
 )
@@ -37,8 +39,9 @@ type ServerConfig struct {
 	//graceful shutdown config
 	GracefulTimeout api.DurationConfig `json:"graceful_timeout,omitempty"`
 
-	//go processor number
-	Processor int `json:"processor,omitempty"`
+	// int go processor number
+	// string set auto means use real cpu core or limit cpu core
+	Processor interface{} `json:"processor,omitempty"`
 
 	Listeners []Listener `json:"listeners,omitempty"`
 
@@ -69,13 +72,13 @@ type ListenerConfig struct {
 // Listener contains the listener's information
 type Listener struct {
 	ListenerConfig
-	Addr                    net.Addr         `json:"-"`
-	ListenerTag             uint64           `json:"-"`
-	ListenerScope           string           `json:"-"`
-	PerConnBufferLimitBytes uint32           `json:"-"` // do not support config
-	InheritListener         *net.TCPListener `json:"-"`
-	InheritPacketConn       *net.PacketConn  `json:"-"`
-	Remain                  bool             `json:"-"`
+	Addr                    net.Addr        `json:"-"`
+	ListenerTag             uint64          `json:"-"`
+	ListenerScope           string          `json:"-"`
+	PerConnBufferLimitBytes uint32          `json:"-"` // do not support config
+	InheritListener         net.Listener    `json:"-"`
+	InheritPacketConn       *net.PacketConn `json:"-"`
+	Remain                  bool            `json:"-"`
 }
 
 func (l Listener) MarshalJSON() (b []byte, err error) {
@@ -99,20 +102,23 @@ func (l *Listener) UnmarshalJSON(b []byte) error {
 	if l.Network == "" {
 		l.Network = "tcp" // default is tcp
 	}
+	l.Network = strings.ToLower(l.Network)
+	var err error
+	var addr net.Addr
 	switch l.Network {
 	case "udp":
-		addr, err := net.ResolveUDPAddr("udp", l.AddrConfig)
-		if err != nil {
-			return err
-		}
-		l.Addr = addr
-	default: // tcp
-		addr, err := net.ResolveTCPAddr("tcp", l.AddrConfig)
-		if err != nil {
-			return err
-		}
-		l.Addr = addr
+		addr, err = net.ResolveUDPAddr("udp", l.AddrConfig)
+	case "unix":
+		addr, err = net.ResolveUnixAddr("unix", l.AddrConfig)
+	case "tcp":
+		addr, err = net.ResolveTCPAddr("tcp", l.AddrConfig)
+	default: // only support tcp,udp,unix
+		err = fmt.Errorf("unknown listen type: %s , only support tcp,udp,unix", l.Network)
 	}
+	if err != nil {
+		return err
+	}
+	l.Addr = addr
 	l.PerConnBufferLimitBytes = defaultBufferLimit
 	return nil
 }
